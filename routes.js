@@ -7,11 +7,40 @@
 // extraction. When the plugin is uninstalled / unconfigured the routes
 // 404 naturally (no handler registered).
 
+
+// ---- Attention: what the Plugins home shows on this app's tile. Reads the plugin's own
+// routes over loopback (they carry their caches), never writes, answers within a minute.
+const __attention = { value: null, until: 0 };
+function __selfGet(req, path, timeoutMs) {
+  return new Promise((resolve) => {
+    const host = req.headers.host || `127.0.0.1:${process.env.CADENCE_PORT || 3801}`;
+    const lib = require('http');
+    const r = lib.get({ host: host.split(':')[0], port: Number(host.split(':')[1] || 80), path, headers: { 'x-cadence-internal': '1' } }, (resp) => { let d = ''; resp.on('data', (c) => { d += c; }); resp.on('end', () => { try { resolve(resp.statusCode < 400 ? JSON.parse(d) : null); } catch (_) { resolve(null); } }); });
+    r.on('error', () => resolve(null));
+    r.setTimeout(timeoutMs || 45000, () => { r.destroy(); resolve(null); });
+  });
+}
+function __attentionOut(items) {
+  const rank = { error: 3, warn: 2, warning: 2, info: 1 };
+  const list = (items || []).filter((i) => i && i.text).map((i) => ({ level: i.level === 'warning' ? 'warn' : (i.level || 'info'), text: String(i.text) }));
+  const level = list.reduce((top, i) => (rank[i.level] > rank[top] ? i.level : top), list.length ? 'info' : 'ok');
+  return { count: list.length, level, items: list, readAt: new Date().toISOString() };
+}
+async function __attentionHandler(req, res, url, compute) {
+  if (__attention.value && __attention.until > Date.now() && url.searchParams.get('refresh') !== '1') return __json(res, __attention.value);
+  let out;
+  try { out = __attentionOut(await compute(req)); } catch (e) { out = { count: 0, level: 'ok', items: [], error: e.message, readAt: new Date().toISOString() }; }
+  __attention.value = out; __attention.until = Date.now() + 60000;
+  return __json(res, out);
+}
+function __json(res, data) { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
+
 module.exports = function register(ctx) {
+  ctx.addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const out = []; const its = await __selfGet(req, '/api/iterations', 60000); const list = Array.isArray(its) ? its : (its && its.iterations) || []; const now = list.find((i) => i.isCurrent || i.timeFrame === 'current'); if (now) { const w = await __selfGet(req, `/api/workitems?iteration=${encodeURIComponent(now.path || now.name)}`, 60000); const items = Array.isArray(w) ? w : (w && w.items) || []; const open = items.filter((i) => !/closed|done|resolved|removed/i.test(i.state || '')); const un = open.filter((i) => !i.assignedTo).length; const bugs = open.filter((i) => /bug/i.test(i.type || '')).length; if (un) out.push({ level: 'warn', text: `${un} open item${un === 1 ? ' has' : 's have'} nobody assigned in ${now.name}.` }); if (bugs > 5) out.push({ level: 'warn', text: `${bugs} open bugs in ${now.name}.` }); } const p = await __selfGet(req, '/api/pipelines', 60000); const failed = (Array.isArray(p) ? p : (p && p.pipelines) || []).filter((x) => x.latestCompleted && x.latestCompleted.result === 'failed'); for (const f of failed) out.push({ level: 'error', text: `Pipeline ${f.name} failed on its last run.` }); return out; }));
   const { shell } = ctx;
   const {
     https, fs,
-    gitExec, sanitizeText, permGate, incognitoGuard,
+    gitExec, sanitizeText, permGate,
     getRepoPath, spawnSync, SWRCache, broadcast,
   } = shell;
 
@@ -101,28 +130,6 @@ module.exports = function register(ctx) {
     });
   }
 
-  // Full ADO REST URL of a work item, used as the target of a Hierarchy relation.
-  function parentWorkItemUrl(parentId) {
-    const cfg = ctx.getConfig();
-    return `https://dev.azure.com/${encodeURIComponent(cfg.AzureDevOpsOrg)}/_apis/wit/workItems/${parseInt(parentId, 10)}`;
-  }
-
-  // Set (or re-parent) a work item's parent. A work item can have only one
-  // parent, so any existing Hierarchy-Reverse relation is removed first.
-  // Removing in reverse index order keeps the remaining indices valid.
-  async function setWorkItemParent(id, parentId) {
-    const wi = await adoRequest('GET', `/wit/workitems/${id}?$expand=relations&api-version=7.1`);
-    const rels = wi.relations || [];
-    const patch = [];
-    for (let i = rels.length - 1; i >= 0; i--) {
-      if (rels[i].rel === 'System.LinkTypes.Hierarchy-Reverse') {
-        patch.push({ op: 'remove', path: `/relations/${i}` });
-      }
-    }
-    patch.push({ op: 'add', path: '/relations/-', value: { rel: 'System.LinkTypes.Hierarchy-Reverse', url: parentWorkItemUrl(parentId) } });
-    return adoRequest('PATCH', `/wit/workitems/${id}?api-version=7.1`, patch, 'application/json-patch+json');
-  }
-
   function proxyHtmlImages(html) {
     if (!html) return html;
     return html.replace(/<img([^>]+)src=["']([^"']+)["']/gi, (match, before, url) => {
@@ -182,7 +189,6 @@ module.exports = function register(ctx) {
 
   async function handleIterations(req, res, url) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read iterations')) return;
       const forceRefresh = url && url.searchParams.get('refresh') === '1';
       const iterations = swrIterations
         ? await swrIterations.get('iterations', fetchIterations, { forceRefresh })
@@ -271,7 +277,6 @@ module.exports = function register(ctx) {
 
   async function handleWorkItems(req, res, url) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read work items')) return;
       const refresh = url.searchParams.get('refresh') === '1';
       const iterationPath = url.searchParams.get('iteration') || '';
       const state = url.searchParams.get('state') || '';
@@ -295,7 +300,6 @@ module.exports = function register(ctx) {
 
   async function handleWorkItemDetail(req, res, id) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read work item')) return;
       const cfg = ctx.getConfig();
       const org = cfg.AzureDevOpsOrg;
       const project = cfg.AzureDevOpsProject;
@@ -347,7 +351,6 @@ module.exports = function register(ctx) {
 
   async function handleUpdateWorkItem(req, res, id) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'update work item')) return;
       if (permGate && !(await permGate(res, 'api', `PATCH /api/workitems/${id}`, `Update work item #${id}`))) return;
       const body = await ctx.readBody(req);
       const patchDoc = [];
@@ -370,37 +373,16 @@ module.exports = function register(ctx) {
           patchDoc.push({ op: 'replace', path, value: val });
         }
       }
-      const hasParent = body.parent !== undefined && body.parent !== null && body.parent !== '';
-      if (patchDoc.length === 0 && !hasParent) return json(res, { error: 'No fields to update' }, 400);
-      let result;
-      if (patchDoc.length > 0) {
-        result = await adoRequest('PATCH', `/wit/workitems/${id}?api-version=7.1`, patchDoc, 'application/json-patch+json');
-      }
-      // Parent linking goes through setWorkItemParent so an existing parent is
-      // replaced rather than rejected (a work item can have only one parent).
-      if (hasParent) result = await setWorkItemParent(id, body.parent);
+      if (patchDoc.length === 0) return json(res, { error: 'No fields to update' }, 400);
+      const result = await adoRequest('PATCH', `/wit/workitems/${id}?api-version=7.1`, patchDoc, 'application/json-patch+json');
       if (swrWorkItems) swrWorkItems.invalidate('wi:');
       if (broadcast) broadcast({ type: 'ui-action', action: 'refresh-workitems' });
-      json(res, { ok: true, id: (result && result.id) || parseInt(id, 10) });
-    } catch (e) { json(res, { error: e.message }, 502); }
-  }
-
-  async function handleSetParent(req, res, id) {
-    try {
-      if (incognitoGuard && incognitoGuard(res, 'set work item parent')) return;
-      if (permGate && !(await permGate(res, 'api', `POST /api/workitems/${id}/parent`, `Set parent of work item #${id}`))) return;
-      const { parent } = await ctx.readBody(req);
-      if (parent === undefined || parent === null || parent === '') return json(res, { error: 'parent (work item id) is required' }, 400);
-      const result = await setWorkItemParent(id, parent);
-      if (swrWorkItems) swrWorkItems.invalidate('wi:');
-      if (broadcast) broadcast({ type: 'ui-action', action: 'refresh-workitems' });
-      json(res, { ok: true, id: result.id, parent: parseInt(parent, 10) });
+      json(res, { ok: true, id: result.id });
     } catch (e) { json(res, { error: e.message }, 502); }
   }
 
   async function handleWorkItemState(req, res, id) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'change work item state')) return;
       if (permGate && !(await permGate(res, 'api', `PATCH /api/workitems/${id}/state`, `Change state of work item #${id}`))) return;
       const { state } = await ctx.readBody(req);
       if (!state) return json(res, { error: 'state is required' }, 400);
@@ -415,22 +397,33 @@ module.exports = function register(ctx) {
 
   async function handleAddWorkItemComment(req, res, id) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'add work item comment')) return;
       if (permGate && !(await permGate(res, 'api', `POST /api/workitems/${id}/comments`, `Comment on work item #${id}`))) return;
-      const { text } = await ctx.readBody(req);
+      const { text, mentions } = await ctx.readBody(req);
       if (!text) return json(res, { error: 'text is required' }, 400);
+      // A mention is only a mention to Azure DevOps as an identity anchor; "@Name" alone is
+      // text. With people named, the comment goes as HTML with each "@Name" wrapped.
+      const people = Array.isArray(mentions) ? mentions.filter((m) => m && m.id && m.name) : [];
+      const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      let payload = sanitizeText(text);
+      if (people.length) {
+        payload = esc(payload).replace(/\r?\n/g, '<br>');
+        for (const m of people) {
+          const name = esc(m.name);
+          const safeId = String(m.id).replace(/[^0-9a-fA-F-]/g, '');
+          payload = payload.split(`@${name}`).join(`<a href="#" data-vss-mention="version:2.0,${safeId}">@${name}</a>`);
+        }
+      }
       const result = await adoRequest('POST',
         `/wit/workitems/${id}/comments?api-version=7.1-preview.4`,
-        { text: sanitizeText(text) });
+        { text: payload });
       json(res, { ok: true, id: result.id, text: result.text, author: (result.createdBy && result.createdBy.displayName) || '', date: result.createdDate || '' });
     } catch (e) { json(res, { error: e.message }, 502); }
   }
 
   async function handleCreateWorkItem(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'create work item')) return;
       if (permGate && !(await permGate(res, 'api', 'POST /api/workitems/create', 'Create work item'))) return;
-      const { type, title, description, priority, tags, assignedTo, iterationPath, areaPath, storyPoints, acceptanceCriteria, parent } = await ctx.readBody(req);
+      const { type, title, description, priority, tags, assignedTo, iterationPath, storyPoints, acceptanceCriteria } = await ctx.readBody(req);
       if (!type || !title) return json(res, { error: 'type and title are required' }, 400);
       const patchDoc = [{ op: 'add', path: '/fields/System.Title', value: sanitizeText(title) }];
       if (description)       patchDoc.push({ op: 'add', path: '/fields/System.Description', value: sanitizeText(description) });
@@ -438,10 +431,8 @@ module.exports = function register(ctx) {
       if (tags)              patchDoc.push({ op: 'add', path: '/fields/System.Tags', value: sanitizeText(tags) });
       if (assignedTo)        patchDoc.push({ op: 'add', path: '/fields/System.AssignedTo', value: assignedTo });
       if (iterationPath)     patchDoc.push({ op: 'add', path: '/fields/System.IterationPath', value: iterationPath });
-      if (areaPath)          patchDoc.push({ op: 'add', path: '/fields/System.AreaPath', value: areaPath });
       if (storyPoints)       patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Scheduling.StoryPoints', value: parseFloat(storyPoints) });
       if (acceptanceCriteria) patchDoc.push({ op: 'add', path: '/fields/Microsoft.VSTS.Common.AcceptanceCriteria', value: sanitizeText(acceptanceCriteria) });
-      if (parent)            patchDoc.push({ op: 'add', path: '/relations/-', value: { rel: 'System.LinkTypes.Hierarchy-Reverse', url: parentWorkItemUrl(parent) } });
       const wiType = encodeURIComponent(type);
       const result = await adoRequest('POST', `/wit/workitems/$${wiType}?api-version=7.1`, patchDoc, 'application/json-patch+json');
       if (broadcast) broadcast({ type: 'ui-action', action: 'refresh-workitems' });
@@ -457,7 +448,6 @@ module.exports = function register(ctx) {
 
   async function handleVelocity(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read velocity')) return;
       const iterData = await adoRequest('GET', '/work/teamsettings/iterations?api-version=7.1');
       const now = new Date();
       const pastIterations = (iterData.value || [])
@@ -500,7 +490,6 @@ module.exports = function register(ctx) {
 
   async function handleBurndown(req, res, url) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read burndown')) return;
       const iterationPath = url.searchParams.get('iteration') || '';
       if (!iterationPath) return json(res, { error: 'iteration parameter required' }, 400);
       const iterData = await adoRequest('GET', '/work/teamsettings/iterations?api-version=7.1');
@@ -538,7 +527,6 @@ module.exports = function register(ctx) {
 
   async function handleTeams(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read teams')) return;
       const cfg = ctx.getConfig();
       const project = cfg.AzureDevOpsProject;
       const data = await adoOrgRequest('GET', `/projects/${encodeURIComponent(project)}/teams?api-version=7.1`);
@@ -549,7 +537,6 @@ module.exports = function register(ctx) {
 
   async function handleAreas(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read areas')) return;
       const fetcher = async () => {
         const data = await adoRequest('GET', `/wit/classificationnodes/Areas?$depth=10&api-version=7.1`, null, null, true);
         const result = [];
@@ -567,7 +554,6 @@ module.exports = function register(ctx) {
 
   async function handleTeamMembers(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'read team members')) return;
       const cfg = ctx.getConfig();
       const project = cfg.AzureDevOpsProject;
       const teamsData = await adoOrgRequest('GET', `/projects/${encodeURIComponent(project)}/teams?api-version=7.1`);
@@ -596,11 +582,11 @@ module.exports = function register(ctx) {
 
   async function handleStartWorking(req, res) {
     try {
-      if (incognitoGuard && incognitoGuard(res, 'start working on work item')) return;
       const { workItemId, repoName } = await ctx.readBody(req);
       const cfg = ctx.getConfig();
+      if (!repoName) return json(res, { error: 'Choose a repo to work in first.', code: 'no-repo', repos: Object.keys(cfg.Repos || {}) }, 400);
       const repoPath = cfg.Repos && cfg.Repos[repoName];
-      if (!repoPath) return json(res, { error: `Repo "${repoName}" not found in config` }, 400);
+      if (!repoPath) return json(res, { error: `Repo "${repoName}" is not in the repo list.`, code: 'no-repo', repos: Object.keys(cfg.Repos || {}) }, 400);
       if (!fs.existsSync(repoPath)) return json(res, { error: `Path does not exist: ${repoPath}` }, 400);
       const wi = await adoRequest('GET', `/wit/workitems/${workItemId}?fields=System.Title,System.WorkItemType,System.Description&api-version=7.1`);
       const title = wi.fields['System.Title'] || 'work';
@@ -650,6 +636,174 @@ module.exports = function register(ctx) {
   // Dynamic paths: the SDK's addAbsoluteRoute takes exact URLs. For /api/workitems/<id>
   // variants we use addAbsolutePrefixRoute to match /api/workitems/* and pattern-match
   // inside the handler.
+  // --- Pipelines and releases ---------------------------------------------------
+  const runOf = (b) => ({
+    id: b.id, number: b.buildNumber, status: b.status,
+    result: b.result ? (b.result === 'partiallySucceeded' ? 'partial' : b.result) : (b.status === 'inProgress' ? 'running' : b.status === 'notStarted' ? 'queued' : b.status),
+    branch: b.sourceBranch ? b.sourceBranch.replace('refs/heads/', '') : null, commit: b.sourceVersion ? b.sourceVersion.slice(0, 8) : null,
+    reason: b.reason, requestedBy: b.requestedFor ? b.requestedFor.displayName : (b.requestedBy ? b.requestedBy.displayName : null),
+    queuedAt: b.queueTime, startedAt: b.startTime, finishedAt: b.finishTime,
+    durationMs: b.startTime && b.finishTime ? new Date(b.finishTime) - new Date(b.startTime) : null,
+    url: b._links && b._links.web ? b._links.web.href : null,
+    definition: b.definition ? { id: b.definition.id, name: b.definition.name } : null,
+  });
+  const wiOf = (w) => ({ id: w.id, type: w.fields['System.WorkItemType'], title: w.fields['System.Title'], state: w.fields['System.State'], assignedTo: w.fields['System.AssignedTo'] ? w.fields['System.AssignedTo'].displayName : null, changedAt: w.fields['System.ChangedDate'] });
+  async function workItemsByIds(ids) {
+    const out = [];
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200);
+      if (!chunk.length) continue;
+      try { const d = await adoRequest('GET', `/wit/workitems?ids=${chunk.join(',')}&fields=System.Id,System.WorkItemType,System.Title,System.State,System.AssignedTo,System.ChangedDate&api-version=7.1`); for (const w of d.value || []) out.push(wiOf(w)); } catch (_) {}
+    }
+    return out;
+  }
+  const conventional = (msg) => { const m = String(msg || '').match(/^(\w+)(?:\(.+?\))?!?:\s*(.*)$/); return m ? { type: m[1].toLowerCase(), subject: m[2] } : { type: 'other', subject: String(msg || '').split('\n')[0] }; };
+
+  async function handlePipelines(req, res) {
+    try {
+      const defs = await adoRequest('GET', '/build/definitions?$top=200&includeLatestBuilds=true&api-version=7.1');
+      const list = (defs.value || []).map((d) => ({ id: d.id, name: d.name, folder: d.path && d.path !== '\\' ? d.path : '', type: d.type, queueStatus: d.queueStatus, url: d._links && d._links.web ? d._links.web.href : null, latest: d.latestBuild ? runOf(d.latestBuild) : null, latestCompleted: d.latestCompletedBuild ? runOf(d.latestCompletedBuild) : null }));
+      list.sort((a, b) => (b.latest && b.latest.queuedAt ? new Date(b.latest.queuedAt) : 0) - (a.latest && a.latest.queuedAt ? new Date(a.latest.queuedAt) : 0));
+      json(res, { pipelines: list });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  async function handlePipelineRuns(req, res, url) {
+    try {
+      const id = url.searchParams.get('id');
+      if (!id) return json(res, { error: 'id required' }, 400);
+      const top = Number(url.searchParams.get('top') || 30);
+      const branch = url.searchParams.get('branch');
+      const d = await adoRequest('GET', `/build/builds?definitions=${encodeURIComponent(id)}&$top=${top}${branch ? `&branchName=${encodeURIComponent(branch.startsWith('refs/') ? branch : 'refs/heads/' + branch)}` : ''}&queryOrder=queueTimeDescending&api-version=7.1`);
+      json(res, { runs: (d.value || []).map(runOf) });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  // One run. Failed tasks bring the tail of their log so the failure can be explained.
+  async function handlePipelineRun(req, res, url) {
+    try {
+      const id = url.searchParams.get('id');
+      if (!id) return json(res, { error: 'id required' }, 400);
+      const [b, tl, ch, wi] = await Promise.all([
+        adoRequest('GET', `/build/builds/${id}?api-version=7.1`),
+        adoRequest('GET', `/build/builds/${id}/timeline?api-version=7.1`).catch(() => ({ records: [] })),
+        adoRequest('GET', `/build/builds/${id}/changes?$top=100&api-version=7.1`).catch(() => ({ value: [] })),
+        adoRequest('GET', `/build/builds/${id}/workitems?$top=100&api-version=7.1`).catch(() => ({ value: [] })),
+      ]);
+      const records = tl.records || [];
+      const byId = {}; for (const r of records) byId[r.id] = r;
+      const dur = (r) => (r.startTime && r.finishTime ? new Date(r.finishTime) - new Date(r.startTime) : null);
+      const stages = records.filter((r) => r.type === 'Stage').sort((a, b) => (a.order || 0) - (b.order || 0)).map((st) => ({
+        name: st.name, state: st.state, result: st.result, durationMs: dur(st),
+        jobs: records.filter((r) => r.type === 'Job' && (r.parentId === st.id || (byId[r.parentId] && byId[r.parentId].parentId === st.id))).sort((a, b) => (a.order || 0) - (b.order || 0)).map((j) => ({
+          name: j.name, state: j.state, result: j.result, durationMs: dur(j),
+          tasks: records.filter((r) => r.type === 'Task' && r.parentId === j.id).sort((a, b) => (a.order || 0) - (b.order || 0)).map((t) => ({ name: t.name, state: t.state, result: t.result, durationMs: dur(t), logId: t.log ? t.log.id : null, issues: (t.issues || []).map((x) => ({ type: x.type, message: x.message })) })),
+        })),
+      }));
+      // Log tails of the failed tasks, capped.
+      const failedTasks = [];
+      for (const st of stages) for (const j of st.jobs) for (const t of j.tasks) if (t.result === 'failed' && t.logId) failedTasks.push({ stage: st.name, job: j.name, task: t });
+      for (const f of failedTasks.slice(0, 4)) {
+        try {
+          const text = await adoRequest('GET', `/build/builds/${id}/logs/${f.task.logId}?api-version=7.1`, null, 'text/plain');
+          const lines = String(typeof text === 'string' ? text : (text.value || []).join('\n')).split('\n');
+          const errIdx = lines.findIndex((l) => /##\[error\]|error:|Error:|FAILED|failed with exit code/i.test(l));
+          const from = Math.max(0, Math.min(errIdx >= 0 ? errIdx - 20 : lines.length - 120, lines.length - 120));
+          f.task.logTail = lines.slice(from, from + 160).map((l) => l.replace(/^\S+T\S+Z\s/, '')).join('\n').slice(0, 12000);
+        } catch (e) { f.task.logTail = `(log not available: ${e.message})`; }
+      }
+      const items = await workItemsByIds((wi.value || []).map((w) => w.id).filter(Boolean));
+      json(res, Object.assign(runOf(b), {
+        message: b.triggerInfo && b.triggerInfo['ci.message'] ? b.triggerInfo['ci.message'] : '',
+        stages,
+        failedTasks: failedTasks.map((f) => ({ stage: f.stage, job: f.job, task: f.task.name, issues: f.task.issues, logTail: f.task.logTail || '' })),
+        changes: (ch.value || []).map((c) => ({ id: c.id, short: c.id ? String(c.id).slice(0, 8) : '', message: (c.message || '').split('\n')[0], author: c.author ? c.author.displayName : null, at: c.timestamp, url: c.displayUri || null, ...conventional(c.message) })),
+        workItems: items,
+      }));
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  async function handlePipelineHealth(req, res, url) {
+    try {
+      const id = url.searchParams.get('id');
+      if (!id) return json(res, { error: 'id required' }, 400);
+      const d = await adoRequest('GET', `/build/builds?definitions=${encodeURIComponent(id)}&$top=50&queryOrder=queueTimeDescending&api-version=7.1`);
+      const runs = (d.value || []).map(runOf);
+      const done = runs.filter((r) => ['succeeded', 'failed', 'partial', 'canceled'].includes(r.result));
+      const ok = done.filter((r) => r.result === 'succeeded').length;
+      const durations = done.map((r) => r.durationMs).filter((x) => x > 0);
+      const avg = durations.length ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : null;
+      const recent = done.slice(0, 10); const older = done.slice(10, 20);
+      const rate = (list) => (list.length ? Math.round((list.filter((r) => r.result === 'succeeded').length / list.length) * 100) : null);
+      json(res, { total: runs.length, completed: done.length, succeeded: ok, failed: done.filter((r) => r.result === 'failed').length, partial: done.filter((r) => r.result === 'partial').length, canceled: done.filter((r) => r.result === 'canceled').length, successRate: rate(done), recentRate: rate(recent), olderRate: rate(older), avgDurationMs: avg, last: done.slice(0, 20).map((r) => ({ id: r.id, number: r.number, result: r.result, durationMs: r.durationMs, finishedAt: r.finishedAt, branch: r.branch })) });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  // Release notes between two runs: the work items and commits of every run in between.
+  async function handlePipelineNotes(req, res, url) {
+    try {
+      const id = url.searchParams.get('id'); const from = url.searchParams.get('from'); const to = url.searchParams.get('to');
+      if (!id || !to) return json(res, { error: 'id and to required (from optional: the previous successful run)' }, 400);
+      const all = (await adoRequest('GET', `/build/builds?definitions=${encodeURIComponent(id)}&$top=200&queryOrder=queueTimeDescending&api-version=7.1`)).value || [];
+      const toB = all.find((b) => String(b.id) === String(to)) || await adoRequest('GET', `/build/builds/${to}?api-version=7.1`);
+      let fromB = from ? (all.find((b) => String(b.id) === String(from)) || await adoRequest('GET', `/build/builds/${from}?api-version=7.1`)) : null;
+      if (!fromB) fromB = all.find((b) => b.result === 'succeeded' && String(b.id) !== String(to) && new Date(b.queueTime) < new Date(toB.queueTime)) || null;
+      const t0 = fromB ? new Date(fromB.queueTime).getTime() : 0; const t1 = new Date(toB.queueTime).getTime();
+      const between = all.filter((b) => { const t = new Date(b.queueTime).getTime(); return t > t0 && t <= t1; });
+      const commits = []; const ids = new Set(); const seenCommit = new Set();
+      for (const b of between) {
+        try { for (const c of ((await adoRequest('GET', `/build/builds/${b.id}/changes?$top=100&api-version=7.1`)).value || [])) if (c.id && !seenCommit.has(c.id)) { seenCommit.add(c.id); commits.push({ id: c.id, short: String(c.id).slice(0, 8), message: (c.message || '').split('\n')[0], author: c.author ? c.author.displayName : null, at: c.timestamp, run: b.buildNumber, ...conventional(c.message) }); } } catch (_) {}
+        try { for (const w of ((await adoRequest('GET', `/build/builds/${b.id}/workitems?$top=100&api-version=7.1`)).value || [])) if (w.id) ids.add(w.id); } catch (_) {}
+      }
+      const items = await workItemsByIds([...ids]);
+      const order = ['Epic', 'Feature', 'User Story', 'Product Backlog Item', 'Bug', 'Task'];
+      const groups = {}; for (const w of items) (groups[w.type] = groups[w.type] || []).push(w);
+      const md = [`# Release notes - ${toB.definition ? toB.definition.name : `pipeline ${id}`} ${toB.buildNumber}`, '', `From ${fromB ? `${fromB.buildNumber} (${String(fromB.finishTime || fromB.queueTime).slice(0, 10)})` : 'the beginning'} to ${toB.buildNumber} (${String(toB.finishTime || toB.queueTime).slice(0, 10)}) - ${between.length} run${between.length === 1 ? '' : 's'}, ${items.length} work item${items.length === 1 ? '' : 's'}, ${commits.length} commit${commits.length === 1 ? '' : 's'}.`, ''];
+      for (const type of Object.keys(groups).sort((a, b) => (order.indexOf(a) === -1 ? 99 : order.indexOf(a)) - (order.indexOf(b) === -1 ? 99 : order.indexOf(b)))) { md.push(`## ${type}s`, ''); for (const w of groups[type]) md.push(`- AB#${w.id} ${w.title}${w.assignedTo ? ` (${w.assignedTo})` : ''}`); md.push(''); }
+      if (!items.length) md.push('_No work item is linked to these runs._', '');
+      if (commits.length) {
+        md.push('## Commits', '');
+        const byType = {}; for (const c of commits) (byType[c.type] = byType[c.type] || []).push(c);
+        for (const t of Object.keys(byType).sort()) { md.push(`### ${t}`, ''); for (const c of byType[t]) md.push(`- \`${c.short}\` ${c.subject || c.message}${c.author ? ` (${c.author})` : ''}`); md.push(''); }
+      }
+      json(res, { pipelineId: Number(id), from: fromB ? runOf(fromB) : null, to: runOf(toB), runs: between.map(runOf), workItems: items, commits, markdown: md.join('\n') });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  // Resolved or closed since the pipeline last succeeded: what the next run would ship.
+  async function handleUnreleased(req, res, url) {
+    try {
+      const id = url.searchParams.get('id');
+      let since = null; let last = null;
+      if (id) { const d = await adoRequest('GET', `/build/builds?definitions=${encodeURIComponent(id)}&resultFilter=succeeded&$top=1&queryOrder=queueTimeDescending&api-version=7.1`); last = (d.value || [])[0] ? runOf(d.value[0]) : null; since = last ? last.finishedAt : null; }
+      const wiql = { query: `SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.State] IN ('Resolved', 'Closed', 'Done') AND [System.WorkItemType] <> 'Task'${since ? ` AND [System.ChangedDate] >= '${new Date(since).toISOString().slice(0, 10)}'` : ' AND [System.ChangedDate] >= @today - 30'} ORDER BY [System.ChangedDate] DESC` };
+      const q = await adoRequest('POST', '/wit/wiql?$top=200&api-version=7.1', wiql);
+      let items = await workItemsByIds((q.workItems || []).map((w) => w.id));
+      if (since) items = items.filter((w) => new Date(w.changedAt) > new Date(since));
+      json(res, { pipelineId: id ? Number(id) : null, lastSuccessful: last, since, items });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  async function handleQueuePipeline(req, res) {
+    try {
+      if (permGate && !(await permGate(res, 'api', 'POST /api/pipelines/queue', 'Queue an Azure DevOps pipeline run'))) return;
+      const { id, branch } = await ctx.readBody(req);
+      if (!id) return json(res, { error: 'id required' }, 400);
+      const body = { definition: { id: Number(id) } };
+      if (branch) body.sourceBranch = branch.startsWith('refs/') ? branch : `refs/heads/${branch}`;
+      const b = await adoRequest('POST', '/build/builds?api-version=7.1', body);
+      json(res, { ok: true, run: runOf(b) });
+    } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines',            handlePipelines);
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines/runs',       handlePipelineRuns);
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines/run',        handlePipelineRun);
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines/health',     handlePipelineHealth);
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines/notes',      handlePipelineNotes);
+  ctx.addAbsoluteRoute('GET',  '/api/pipelines/unreleased', handleUnreleased);
+  ctx.addAbsoluteRoute('POST', '/api/pipelines/queue',      handleQueuePipeline);
+
   ctx.addAbsoluteRoute('GET',  '/api/iterations',         handleIterations);
   ctx.addAbsoluteRoute('GET',  '/api/workitems',          handleWorkItems);
   ctx.addAbsoluteRoute('POST', '/api/workitems/create',   handleCreateWorkItem);
@@ -660,16 +814,22 @@ module.exports = function register(ctx) {
   ctx.addAbsoluteRoute('GET',  '/api/team-members',       handleTeamMembers);
   ctx.addAbsoluteRoute('POST', '/api/start-working',      handleStartWorking);
 
+  // "What is happening, and who is doing it" - the timeline feed, one item's own history, and
+  // what a single person is carrying. Kept in its own file so this one stays the work-item
+  // surface. It registers its own routes and hands back the handler for the /updates sub-path,
+  // which belongs to the prefix matcher below.
+  const activity = require('./ado-activity').register({ adoRequest, json, ctx });
+
   // /api/workitems/<id> and its sub-paths require pattern matching.
   ctx.addAbsolutePrefixRoute('/api/workitems', (req, res, url, subpath) => {
     const s = subpath || '';
     const mState   = s.match(/^\/(\d+)\/state$/);
     const mComment = s.match(/^\/(\d+)\/comments$/);
-    const mParent  = s.match(/^\/(\d+)\/parent$/);
+    const mUpdates = s.match(/^\/(\d+)\/updates$/);
     const mItem    = s.match(/^\/(\d+)$/);
+    if (mUpdates && req.method === 'GET') return activity.handleWorkItemUpdates(req, res, mUpdates[1]);
     if (mState && req.method === 'PATCH') return handleWorkItemState(req, res, mState[1]);
     if (mComment && req.method === 'POST') return handleAddWorkItemComment(req, res, mComment[1]);
-    if (mParent && req.method === 'POST') return handleSetParent(req, res, mParent[1]);
     if (mItem && req.method === 'GET')   return handleWorkItemDetail(req, res, mItem[1]);
     if (mItem && req.method === 'PATCH') return handleUpdateWorkItem(req, res, mItem[1]);
     return false; // not our path -- fall through

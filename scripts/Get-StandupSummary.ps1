@@ -1,5 +1,5 @@
 param(
-    [string]$ApiBase = "http://127.0.0.1:3800",
+    [string]$ApiBase = $(if ($env:CADENCE_API) { $env:CADENCE_API } else { "http://127.0.0.1:3800" }),
     [string]$IterationPath = ""
 )
 

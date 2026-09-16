@@ -1,6 +1,6 @@
 # Azure DevOps Plugin
 
-The Azure DevOps plugin owns every interaction with dev.azure.com in Symphonee: work item tracking, sprints and iterations, velocity, teams, area paths, burndown, and AB# auto-linking.
+The Azure DevOps plugin owns every interaction with dev.azure.com in Cadence: work item tracking, sprints and iterations, velocity, teams, area paths, burndown, and AB# auto-linking.
 
 ## Extraction state
 
@@ -97,3 +97,19 @@ Under `./dashboard/plugins/azure-devops/scripts/`:
 | `Refresh-Board.ps1` | Refresh backlog / board view |
 
 Call with `powershell.exe -ExecutionPolicy Bypass -NoProfile -File "./dashboard/plugins/azure-devops/scripts/<Name>.ps1"` from bash.
+
+## Pipelines and releases (3.0)
+
+The Release Manager plugin retired into this one. Same server as your shell (`$CADENCE_API`, fallback `http://127.0.0.1:3800`); GET routes are read-only, POST routes go through the permission gate and need `x-cadence-token` (the scripts attach it).
+
+| Route | What |
+|---|---|
+| `GET /api/pipelines` | Every build pipeline with its latest run and latest completed run |
+| `GET /api/pipelines/runs?id&top&branch` | Runs of one pipeline |
+| `GET /api/pipelines/run?id` | One run: stages, jobs, tasks, failed tasks with their log tail, commits (conventional type parsed), linked work items |
+| `GET /api/pipelines/health?id` | Success rate (recent versus older), failed, partial, average duration, last 20 |
+| `GET /api/pipelines/notes?id&to[&from]` | Release notes between two runs: work items grouped by type, commits grouped by conventional type, as Markdown plus the raw lists; `from` defaults to the previous successful run |
+| `GET /api/pipelines/unreleased[?id]` | Work items resolved or closed since the pipeline last succeeded (or in the last 30 days) |
+| `POST /api/pipelines/queue {id, branch?}` | Queue a run |
+
+Scripts: `Get-Pipelines`, `Get-PipelineRuns -Id [-Branch]`, `Get-PipelineRun -Id`, `Get-PipelineHealth -Id`, `New-ReleaseNotes -Id -To [-From]`, `Get-UnreleasedItems [-Id]`, `Start-Pipeline -Id [-Branch]` (gated).

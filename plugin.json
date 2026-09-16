@@ -1,8 +1,8 @@
 {
   "id": "azure-devops",
   "name": "Azure DevOps",
-  "version": "0.7.0",
-  "sdkVersion": 2,
+  "version": "0.6.3",
+  "sdkVersion": 3,
   "description": "Azure DevOps: work items, iterations, teams, velocity, areas, activity, AB# auto-linking",
   "icon": "kanban",
   "tint": "0, 120, 215",
@@ -29,7 +29,16 @@
     "retro",
     "retrospective",
     "AB#",
-    "ab-reference"
+    "ab-reference",
+    "pipeline",
+    "pipelines",
+    "build",
+    "deploy",
+    "release",
+    "release notes",
+    "changelog",
+    "CI/CD",
+    "pipeline health"
   ],
   "activationConditions": {
     "configKeys": [
@@ -74,7 +83,10 @@
         "icon": "list-todo",
         "pinned": true,
         "position": 2,
-        "claims": { "tabBtnId": "backlogTabBtn", "panelId": "panel-backlog" },
+        "claims": {
+          "tabBtnId": "backlogTabBtn",
+          "panelId": "panel-backlog"
+        },
         "openable": true
       },
       {
@@ -83,7 +95,10 @@
         "icon": "ticket",
         "popup": true,
         "position": 3,
-        "claims": { "tabBtnId": "workitemTabBtn", "panelId": "panel-workitem" }
+        "claims": {
+          "tabBtnId": "workitemTabBtn",
+          "panelId": "panel-workitem"
+        }
       },
       {
         "id": "activity",
@@ -91,7 +106,10 @@
         "icon": "activity",
         "popup": true,
         "position": 5,
-        "claims": { "tabBtnId": "activityTabBtn", "panelId": "panel-activity" }
+        "claims": {
+          "tabBtnId": "activityTabBtn",
+          "panelId": "panel-activity"
+        }
       }
     ],
     "leftQuickActions": [
@@ -153,8 +171,6 @@
       "createRoute": "/api/workitems/create",
       "getRoute": "/api/workitems/:id",
       "updateStateRoute": "/api/workitems/:id/state",
-      "updateRoute": "/api/workitems/:id",
-      "setParentRoute": "/api/workitems/:id/parent",
       "commentRoute": "/api/workitems/:id/comments",
       "iterationsRoute": "/api/iterations",
       "teamsRoute": "/api/teams",
@@ -244,13 +260,6 @@
               },
               "iterationPath": {
                 "type": "string"
-              },
-              "areaPath": {
-                "type": "string"
-              },
-              "parent": {
-                "type": "number",
-                "description": "Parent work item id to nest this item under (creates a Hierarchy link)."
               }
             },
             "required": [
@@ -286,29 +295,6 @@
               "state"
             ]
           }
-        },
-        {
-          "name": "set_work_item_parent",
-          "description": "Nest a work item under a parent (Hierarchy link). Replaces any existing parent. Gated by permissions.",
-          "route": "POST /api/workitems/:id/parent",
-          "bodyFrom": "arguments",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "number",
-                "description": "Child work item id."
-              },
-              "parent": {
-                "type": "number",
-                "description": "Parent work item id."
-              }
-            },
-            "required": [
-              "id",
-              "parent"
-            ]
-          }
         }
       ],
       "prompts": [
@@ -330,14 +316,308 @@
         "label": "Activity",
         "pinned": true,
         "position": 0,
-        "claims": { "tabBtnId": "intelTab-activity", "panelId": "ipanel-activity" }
+        "claims": {
+          "tabBtnId": "intelTab-activity",
+          "panelId": "ipanel-activity"
+        }
       },
       {
         "id": "team",
         "label": "Team",
         "pinned": true,
         "position": 1,
-        "claims": { "tabBtnId": "intelTab-team", "panelId": "ipanel-team" }
+        "claims": {
+          "tabBtnId": "intelTab-team",
+          "panelId": "ipanel-team"
+        }
+      }
+    ],
+    "surfaces": [
+      {
+        "id": "ado",
+        "title": "Azure DevOps",
+        "icon": "kanban",
+        "mount": "rail",
+        "entry": "ui/ado.js",
+        "sidebar": true,
+        "aside": true
+      }
+    ],
+    "scripts": [
+      {
+        "file": "Get-Activity.ps1",
+        "label": "What moved recently",
+        "description": "The project timeline: who changed what, when, and its state now.",
+        "args": [
+          {
+            "name": "Days",
+            "label": "Days back",
+            "default": "7"
+          },
+          {
+            "name": "Person",
+            "label": "Only this person",
+            "required": false
+          }
+        ]
+      },
+      {
+        "file": "Get-PersonLoad.ps1",
+        "label": "What someone is carrying",
+        "description": "Everything open and assigned to one person, plus what they finished lately.",
+        "args": [
+          {
+            "name": "Who",
+            "label": "Display name",
+            "required": true
+          },
+          {
+            "name": "Days",
+            "label": "Days back",
+            "default": "30"
+          }
+        ]
+      },
+      {
+        "file": "Get-MyWorkItems.ps1",
+        "label": "My work items",
+        "description": "What is assigned to you in the current sprint, grouped by state.",
+        "args": [
+          {
+            "name": "State",
+            "label": "Only this state",
+            "required": false
+          }
+        ]
+      },
+      {
+        "file": "Get-SprintStatus.ps1",
+        "label": "Sprint status",
+        "description": "Where the current sprint stands."
+      },
+      {
+        "file": "Get-StandupSummary.ps1",
+        "label": "Standup summary",
+        "description": "A standup you can paste, built from what actually changed.",
+        "args": [
+          {
+            "name": "IterationPath",
+            "label": "Sprint path",
+            "required": false
+          }
+        ]
+      },
+      {
+        "file": "Get-Retrospective.ps1",
+        "label": "Retrospective",
+        "description": "What landed, what slipped, and what to say about it."
+      },
+      {
+        "file": "Find-WorkItems.ps1",
+        "label": "Find work items",
+        "description": "Search by text, type, state, assignee or sprint.",
+        "args": [
+          {
+            "name": "Search",
+            "label": "Text",
+            "required": false
+          },
+          {
+            "name": "Type",
+            "label": "Type",
+            "required": false
+          },
+          {
+            "name": "State",
+            "label": "State",
+            "required": false
+          },
+          {
+            "name": "AssignedTo",
+            "label": "Assigned to",
+            "required": false
+          }
+        ]
+      },
+      {
+        "file": "Get-WorkItem.ps1",
+        "label": "Open one work item",
+        "description": "The full detail of a single item.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Work item number",
+            "required": true
+          }
+        ]
+      },
+      {
+        "file": "New-WorkItem.ps1",
+        "label": "Create a work item",
+        "description": "Create a task, bug, story or feature.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Type",
+            "label": "Type",
+            "default": "Task"
+          },
+          {
+            "name": "Title",
+            "label": "Title",
+            "required": true
+          },
+          {
+            "name": "Description",
+            "label": "Description",
+            "required": false
+          },
+          {
+            "name": "AssignedTo",
+            "label": "Assign to",
+            "required": false
+          },
+          {
+            "name": "Tags",
+            "label": "Tags",
+            "required": false
+          }
+        ]
+      },
+      {
+        "file": "Set-WorkItemState.ps1",
+        "label": "Change a state",
+        "description": "Move one item to another state.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Id",
+            "label": "Work item number",
+            "required": true
+          },
+          {
+            "name": "State",
+            "label": "New state",
+            "required": true
+          }
+        ]
+      },
+      {
+        "file": "Add-WorkItemComment.ps1",
+        "label": "Comment on a work item",
+        "description": "Leave a note on an item without opening a browser.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Id",
+            "label": "Work item number",
+            "required": true
+          },
+          {
+            "name": "Text",
+            "label": "Comment",
+            "required": true
+          }
+        ]
+      },
+      {
+        "file": "Refresh-Board.ps1",
+        "label": "Refresh the board",
+        "description": "Drop the cached board data and read it again.",
+        "mutates": true
+      },
+      {
+        "file": "Get-Pipelines.ps1",
+        "label": "List pipelines",
+        "description": "Every pipeline with its latest run.",
+        "args": []
+      },
+      {
+        "file": "Get-PipelineRuns.ps1",
+        "label": "Runs of a pipeline",
+        "description": "Newest first, optionally one branch.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Pipeline id"
+          },
+          {
+            "name": "Top",
+            "label": "How many",
+            "default": "30"
+          }
+        ]
+      },
+      {
+        "file": "Get-PipelineRun.ps1",
+        "label": "Read a run",
+        "description": "Stages, failed tasks with logs, commits and work items of one run.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Run (build) id"
+          }
+        ]
+      },
+      {
+        "file": "Get-PipelineHealth.ps1",
+        "label": "Pipeline health",
+        "description": "Success rate, failures, duration, trend.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Pipeline id"
+          }
+        ]
+      },
+      {
+        "file": "New-ReleaseNotes.ps1",
+        "label": "Release notes",
+        "description": "Between two runs, from the linked work items and commits.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Pipeline id"
+          },
+          {
+            "name": "To",
+            "label": "Run id shipped"
+          },
+          {
+            "name": "From",
+            "label": "Previous run id",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Get-UnreleasedItems.ps1",
+        "label": "Waiting to ship",
+        "description": "Resolved or closed since the last successful run.",
+        "args": [
+          {
+            "name": "Id",
+            "label": "Pipeline id",
+            "default": ""
+          }
+        ]
+      },
+      {
+        "file": "Start-Pipeline.ps1",
+        "label": "Queue a run",
+        "description": "Runs a pipeline, on a branch if given.",
+        "mutates": true,
+        "args": [
+          {
+            "name": "Id",
+            "label": "Pipeline id"
+          },
+          {
+            "name": "Branch",
+            "label": "Branch",
+            "default": ""
+          }
+        ]
       }
     ]
   }

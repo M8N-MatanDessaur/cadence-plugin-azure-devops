@@ -1,7 +1,7 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)]
     [int]$Id,
-    [string]$ApiBase = "http://127.0.0.1:3800"
+    [string]$ApiBase = $(if ($env:CADENCE_API) { $env:CADENCE_API } else { "http://127.0.0.1:3800" })
 )
 
 $wi = Invoke-RestMethod "$ApiBase/api/workitems/$Id"
@@ -20,14 +20,14 @@ Write-Host ""
 
 if ($wi.description) {
     Write-Host "  Description:" -ForegroundColor White
-    $desc = $wi.description -replace '<[^>]+>','' -replace '&nbsp;',' ' -replace '&amp;','&' -replace '&#39;',"'"
+    $desc = [System.Net.WebUtility]::HtmlDecode(($wi.description -replace '<[^>]+>',''))
     Write-Host "    $($desc.Trim().Substring(0, [math]::Min($desc.Trim().Length, 500)))" -ForegroundColor DarkGray
     Write-Host ""
 }
 
 if ($wi.acceptanceCriteria) {
     Write-Host "  Acceptance Criteria:" -ForegroundColor White
-    $ac = $wi.acceptanceCriteria -replace '<[^>]+>','' -replace '&nbsp;',' '
+    $ac = [System.Net.WebUtility]::HtmlDecode(($wi.acceptanceCriteria -replace '<[^>]+>',''))
     Write-Host "    $($ac.Trim().Substring(0, [math]::Min($ac.Trim().Length, 500)))" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -35,7 +35,7 @@ if ($wi.acceptanceCriteria) {
 if ($wi.linkedItems -and $wi.linkedItems.Count -gt 0) {
     Write-Host "  Linked Items:" -ForegroundColor White
     foreach ($link in $wi.linkedItems) {
-        if ($link.id) { Write-Host "    #$($link.id) ($($link.rel.Split('.')[-1]))" -ForegroundColor DarkGray }
+        if ($link.id) { $relName = ([string]$link.rel).Split('.')[-1]; Write-Host "    #$($link.id) ($relName)" -ForegroundColor DarkGray }
     }
     Write-Host ""
 }

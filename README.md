@@ -1,14 +1,14 @@
-# Azure DevOps Plugin for Symphonee
+# Azure DevOps Plugin for Cadence
 
-Integrates Azure DevOps into Symphonee: work items, iterations, teams, velocity, burndown, and `AB#` commit auto-linking.
+Integrates Azure DevOps into Cadence: work items, iterations, teams, velocity, burndown, and `AB#` commit auto-linking.
 
 ## Installation
 
-1. Clone into your Symphonee plugins folder:
+1. Clone into your Cadence plugins folder:
    ```
-   git clone https://github.com/M8N-MatanDessaur/symphonee-plugin-azure-devops.git dashboard/plugins/azure-devops
+   git clone https://github.com/M8N-MatanDessaur/cadence-plugin-azure-devops.git dashboard/plugins/azure-devops
    ```
-2. Restart Symphonee.
+2. Restart Cadence.
 3. Open **Settings -> Plugins -> Azure DevOps** and fill in your org, project, PAT, and default team.
 
 ## What it contributes

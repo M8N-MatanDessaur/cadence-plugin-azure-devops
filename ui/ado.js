@@ -66,6 +66,23 @@ function AzureDevOps({ host }) {
   const [person, setPerson] = useState(null);
   const [expanded, setExpanded] = useState(() => new Set());
 
+  // ---------------------------------------------------------------- opened AT something
+  // "@ado 12345" in the palette, a work item a CLI resolved, a person from a question: the
+  // app opens this surface with a target and says so again whenever it changes while the
+  // screen is up. { workItem } lands on that item; { person } on that person's load;
+  // { query } on the backlog filtered to those words.
+  const landOn = useCallback((target) => {
+    if (!target) return;
+    if (target.workItem) { setOpenId(Number(target.workItem) || String(target.workItem)); return; }
+    if (target.person) { setPerson(String(target.person)); setOpenId(null); setTab('people'); return; }
+    if (target.query) { setFilters((f) => ({ ...f, q: String(target.query) })); setOpenId(null); setTab('backlog'); }
+  }, []);
+  useEffect(() => {
+    if (!host.target || !host.onTarget) return;
+    landOn(host.target());
+    return host.onTarget(landOn);
+  }, [host, landOn]);
+
   // ---------------------------------------------------------------- work items
 
   // Two loads race when the screen opens: one with no filters while the sprint list is still

@@ -1,3 +1,6 @@
+// A value that is not known yet is a shape, not three dots: a stat tile and a health figure
+// draw a skeleton the size of the number until the real one lands.
+const pending = (v) => v === '\u2026' || v === '...';
 /**
  * The app's own building blocks, reached from a plugin.
  *
@@ -40,7 +43,7 @@ export function ensureStyles() {
 
 /** A titled panel: uppercase tracked title, optional right-hand meta, bordered body. */
 export function Panel(host, { title, action, wide, className = '', style, bodyStyle }, ...children) {
-  const { h } = host;
+  const { h, ui } = host;
   ensureStyles();
   return h('section', { className: `mpanel${wide ? ' mpanel--wide' : ''} ${className}`.trim(), style },
     title !== undefined
@@ -51,25 +54,25 @@ export function Panel(host, { title, action, wide, className = '', style, bodySt
 
 /** A number with a label under it. tone: brass | moss | rosin | muted */
 export function Stat(host, { label, value, hint, tone }) {
-  const { h } = host;
+  const { h, ui } = host;
   return h('div', { className: `mstat${tone ? ` mstat--${tone}` : ''}` },
-    h('div', { className: 'mstat__value' }, value),
+    h('div', { className: 'mstat__value' }, pending(value) ? h(ui.Skeleton, { width: 64, height: 22 }) : value),
     h('div', { className: 'mstat__label' }, label),
     hint ? h('div', { className: 'mstat__hint' }, hint) : null);
 }
 
 /** One item of the thin status strip that sits under the stat cards. */
 export function Health(host, { label, value, tone, hint }) {
-  const { h } = host;
+  const { h, ui } = host;
   return h('span', { className: `mhealth__item${tone ? ` mhealth__item--${tone}` : ''}` },
     h('span', { className: 'mhealth__label' }, label),
-    h('b', { className: 'mhealth__value' }, value),
+    h('b', { className: 'mhealth__value' }, pending(value) ? h(ui.Skeleton, { width: 26, height: 11 }) : value),
     hint ? h('span', { className: 'mhealth__hint' }, hint) : null);
 }
 
 /** Label / bar / number rows, scaled to the largest unless a max is given. */
 export function Bars(host, { rows, max }) {
-  const { h } = host;
+  const { h, ui } = host;
   const top = max ?? Math.max(1, ...rows.map((r) => r.value));
   return h('div', { className: 'mbars' },
     rows.map((r) => h('div', { key: r.label, className: 'mbars__row', title: r.hint },
@@ -81,7 +84,7 @@ export function Bars(host, { rows, max }) {
 
 /** A list row: optional leading node, label, optional sub line, optional trailing meta. */
 export function ListRow(host, { key, lead, label, sub, meta, onClick, tall }) {
-  const { h } = host;
+  const { h, ui } = host;
   const cls = `mlist__row${tall || sub ? ' mlist__row--tall' : ''}`;
   const inner = [
     lead || null,
@@ -112,7 +115,7 @@ export function NavItem(host, { key, icon, label, active, badge, onClick, title 
 
 /** The uppercase tracked section label a sidebar uses between groups. */
 export function Section(host, title, right) {
-  const { h } = host;
+  const { h, ui } = host;
   return h('div', { className: 'sb__section' }, h('span', { className: 'sb__title' }, title), right || null);
 }
 

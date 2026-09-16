@@ -1,7 +1,7 @@
 {
   "id": "azure-devops",
   "name": "Azure DevOps",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "sdkVersion": 3,
   "description": "Azure DevOps: work items, iterations, teams, velocity, areas, activity, AB# auto-linking",
   "icon": "kanban",

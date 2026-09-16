@@ -12,14 +12,10 @@ param(
     [string]$Tags = "",
     [double]$StoryPoints = 0,
     [string]$AcceptanceCriteria = "",
-<<<<<<< ours
-    [string]$ApiBase = $(if ($env:CADENCE_API) { $env:CADENCE_API } else { "http://127.0.0.1:3800" })
-=======
     [string]$IterationPath = "",
     [string]$AreaPath = "",
     [int]$Parent = 0,
-    [string]$ApiBase = "http://127.0.0.1:3800"
->>>>>>> theirs
+    [string]$ApiBase = $(if ($env:CADENCE_API) { $env:CADENCE_API } else { "http://127.0.0.1:3800" })
 )
 
 $body = @{

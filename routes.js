@@ -869,11 +869,8 @@ module.exports = function register(ctx) {
     const s = subpath || '';
     const mState   = s.match(/^\/(\d+)\/state$/);
     const mComment = s.match(/^\/(\d+)\/comments$/);
-<<<<<<< ours
     const mUpdates = s.match(/^\/(\d+)\/updates$/);
-=======
     const mParent  = s.match(/^\/(\d+)\/parent$/);
->>>>>>> theirs
     const mItem    = s.match(/^\/(\d+)$/);
     if (mUpdates && req.method === 'GET') return activity.handleWorkItemUpdates(req, res, mUpdates[1]);
     if (mState && req.method === 'PATCH') return handleWorkItemState(req, res, mState[1]);

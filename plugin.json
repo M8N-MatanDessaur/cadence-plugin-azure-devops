@@ -643,7 +643,8 @@
             "target": {
               "workItem": "{1}"
             }
-          }
+          },
+          "mention": "\\bAB#([0-9]{3,})\\b"
         }
       ],
       "search": {

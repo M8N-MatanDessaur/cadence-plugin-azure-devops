@@ -619,6 +619,47 @@
           }
         ]
       }
-    ]
+    ],
+    "handle": {
+      "name": "ado",
+      "aliases": [
+        "azure",
+        "devops",
+        "workitem",
+        "wi"
+      ],
+      "description": "Azure DevOps: a work item by number, or a search across work items and people",
+      "placeholder": "a work item number (12345, AB#12345), or words to search for",
+      "resolve": [
+        {
+          "pattern": "^(?:AB#|#)?([0-9]{3,})$",
+          "flags": "i",
+          "kind": "work-item",
+          "bare": true,
+          "label": "Work item #{1}",
+          "detail": "Azure DevOps",
+          "open": {
+            "surface": "ado",
+            "target": {
+              "workItem": "{1}"
+            }
+          }
+        }
+      ],
+      "search": {
+        "route": "/search",
+        "minChars": 2,
+        "kinds": [
+          "work-item",
+          "person"
+        ]
+      },
+      "fallback": {
+        "surface": "ado",
+        "target": {
+          "query": "{text}"
+        }
+      }
+    }
   }
 }

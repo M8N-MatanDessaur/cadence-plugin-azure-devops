@@ -36,6 +36,7 @@ async function __attentionHandler(req, res, url, compute) {
 function __json(res, data) { res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(data)); }
 
 module.exports = function register(ctx) {
+  ctx.addRoute('GET', '/search', (req, res, url) => handleSearch(req, res, url));
   ctx.addRoute('GET', '/attention', (req, res, url) => __attentionHandler(req, res, url, async (req) => { const out = []; const its = await __selfGet(req, '/api/iterations', 60000); const list = Array.isArray(its) ? its : (its && its.iterations) || []; const now = list.find((i) => i.isCurrent || i.timeFrame === 'current'); if (now) { const w = await __selfGet(req, `/api/workitems?iteration=${encodeURIComponent(now.path || now.name)}`, 60000); const items = Array.isArray(w) ? w : (w && w.items) || []; const open = items.filter((i) => !/closed|done|resolved|removed/i.test(i.state || '')); const un = open.filter((i) => !i.assignedTo).length; const bugs = open.filter((i) => /bug/i.test(i.type || '')).length; if (un) out.push({ level: 'warn', text: `${un} open item${un === 1 ? ' has' : 's have'} nobody assigned in ${now.name}.` }); if (bugs > 5) out.push({ level: 'warn', text: `${bugs} open bugs in ${now.name}.` }); } const p = await __selfGet(req, '/api/pipelines', 60000); const failed = (Array.isArray(p) ? p : (p && p.pipelines) || []).filter((x) => x.latestCompleted && x.latestCompleted.result === 'failed'); for (const f of failed) out.push({ level: 'error', text: `Pipeline ${f.name} failed on its last run.` }); return out; }));
   const { shell } = ctx;
   const {
@@ -622,6 +623,78 @@ module.exports = function register(ctx) {
       const members = [...memberMap.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
       json(res, members);
     } catch (e) { json(res, { error: e.message }, 502); }
+  }
+
+  // The @ado handle's search: what "@ado login bug" or a plain question about a person asks.
+  // Answers in the shape every handle shares - label, detail, kind, and where it opens - so
+  // the palette, Ask Cadence and every CLI can use it without knowing anything about ADO.
+  // GET /api/plugins/azure-devops/search?q=<text>&limit=8&kinds=work-item,person
+  async function handleSearch(req, res, url) {
+    try {
+      const q = String(url.searchParams.get('q') || '').trim();
+      const limit = Math.max(1, Math.min(25, Number(url.searchParams.get('limit')) || 8));
+      const kinds = String(url.searchParams.get('kinds') || '').split(',').map(s => s.trim()).filter(Boolean);
+      const wants = (k) => !kinds.length || kinds.includes(k);
+      if (!q) return json(res, { items: [] });
+      const items = [];
+      const work = [];
+      if (wants('work-item')) {
+        work.push((async () => {
+          // A number is an id, whatever else it might be; words look at the title.
+          const asId = /^(?:AB#|#)?(\d{3,})$/i.exec(q);
+          const safe = q.replace(/'/g, "''");
+          const where = asId ? `[System.Id] = ${asId[1]}` : `[System.Title] CONTAINS '${safe}' AND [System.State] NOT IN ('Removed')`;
+          const wiql = await adoRequest('POST', `/wit/wiql?$top=${limit}&api-version=7.1`, { query: `SELECT [System.Id] FROM WorkItems WHERE ${where} ORDER BY [System.ChangedDate] DESC` });
+          const ids = (wiql.workItems || []).map(w => w.id).slice(0, limit);
+          if (!ids.length) return;
+          const detail = await adoRequest('GET', `/wit/workitems?ids=${ids.join(',')}&fields=System.Id,System.Title,System.State,System.WorkItemType,System.AssignedTo&api-version=7.1`);
+          for (const wi of (detail.value || [])) {
+            const f = wi.fields || {};
+            items.push({
+              kind: 'work-item', id: String(wi.id),
+              label: `#${wi.id} ${f['System.Title'] || ''}`.trim(),
+              detail: [f['System.WorkItemType'], f['System.State'], f['System.AssignedTo'] && f['System.AssignedTo'].displayName].filter(Boolean).join(' - '),
+              open: { surface: 'ado', target: { workItem: String(wi.id) } },
+              score: asId ? 1 : 0.7,
+            });
+          }
+        })());
+      }
+      if (wants('person') && !/^\d+$/.test(q)) {
+        work.push((async () => {
+          const cfg = ctx.getConfig();
+          const project = cfg.AzureDevOpsProject;
+          const teamsData = await adoOrgRequest('GET', `/projects/${encodeURIComponent(project)}/teams?api-version=7.1`);
+          const results = await Promise.all((teamsData.value || []).map(t =>
+            adoOrgRequest('GET', `/projects/${encodeURIComponent(project)}/teams/${encodeURIComponent(t.name)}/members?api-version=7.1`).catch(() => ({ value: [] }))
+          ));
+          const seen = new Set();
+          const needle = q.toLowerCase();
+          for (const data of results) {
+            for (const m of (data.value || [])) {
+              const id = m.identity && m.identity.id;
+              const name = (m.identity && m.identity.displayName) || '';
+              const mail = (m.identity && m.identity.uniqueName) || '';
+              if (!id || seen.has(id)) continue;
+              const hit = name.toLowerCase().includes(needle) || needle.includes(name.toLowerCase()) || mail.toLowerCase().startsWith(needle.replace(/\s+/g, '.'));
+              if (!hit) continue;
+              seen.add(id);
+              const org = mail.split('@')[1] ? mail.split('@')[1].split('.')[0] : '';
+              items.push({
+                kind: 'person', id,
+                label: name || mail,
+                detail: [mail, org ? `works at ${org}` : ''].filter(Boolean).join(' - '),
+                open: { surface: 'ado', target: { person: mail || name } },
+                score: name.toLowerCase() === needle ? 1 : 0.6,
+              });
+            }
+          }
+        })());
+      }
+      await Promise.all(work);
+      items.sort((a, b) => (b.score || 0) - (a.score || 0));
+      json(res, { items: items.slice(0, limit) });
+    } catch (e) { json(res, { error: e.message }, e.message.includes('not configured') ? 400 : 502); }
   }
 
   async function handleStartWorking(req, res) {
